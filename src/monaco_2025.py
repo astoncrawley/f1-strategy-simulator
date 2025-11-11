@@ -1,18 +1,17 @@
 """
-make_monaco2025_formatA.py
-Fetches Monaco 2025 (Timing-only) with FastF1 and writes a Format A CSV with:
+Fetches Monaco 2025 (Timing-only) with FastF1 and writes a CSV with:
  driver, lap, base_lap_time, compound, tyre_age, delta_if_held_up, is_pit_lap, pit_loss
 
 Behavior:
  - Pit laps: we replace the pit-lap distortion by estimating the lap driving component:
-     base_driving_lap = typical outlap/inlap estimate (we use median of similar laps)
+   base_driving_lap = typical outlap/inlap estimate (we use median of similar laps)
    and set pit_loss = raw_pitlap_time - base_driving_lap  (so pit_loss is the time to be added if you
    want to model pit stops separately)
  - Gap-based delta_if_held_up: for each driver & lap we compute the gap to car ahead; if gap <= GAP_THRESHOLD,
    delta_if_held_up shows the typical per-lap penalty (positive) the driver would suffer while being "held up".
    The value is computed as max( min_penalty, (driver_median_free_lap - car_ahead_median_free_lap) * penalty_factor )
    but only applied where gap <= GAP_THRESHOLD.
- - Deterministic output (no RNG). You can tweak parameters below.
+ - Deterministic output (no RNG).
 
 Requires: fastf1, pandas, numpy
 """
@@ -29,9 +28,8 @@ warnings.filterwarnings("ignore")
 # --------------------
 YEAR = 2025
 # Monaco was Round 8 in 2025 per F1 calendars — FastF1 can load by (year, round) or event name.
-# If round is different on your copy, you can set `event_name = 'Monaco'` instead.
-ROUND = 8  # adjust if your FastF1 calendar differs
-OUTPUT_CSV = "monaco2025_formatA_C_gap.csv"
+ROUND = 8 
+OUTPUT_CSV = "monaco_2025_simulation.csv"
 
 # pit handling (Option C)
 MIN_DRIVING_LAP_EST = 60.0  # minimum plausible driving lap (s) safe-guard
@@ -81,7 +79,12 @@ def estimate_driving_lap_from_neighbours(laps_df, driver, lapnum):
 # Load race with FastF1 (Timing-only)
 # --------------------
 # Note: FastF1 will try to download timing files from the upstream source; run locally.
-fastf1.Cache.enable_cache('cache')  # local cache dir
+# fastf1.Cache.enable_cache('cache')  # local cache dir
+import os
+
+CACHE_DIR = 'cache'
+os.makedirs(CACHE_DIR, exist_ok=True)  # create folder if not exists
+fastf1.Cache.enable_cache(CACHE_DIR)
 # Load race session
 race = fastf1.get_session(YEAR, ROUND, 'R')   # 'R' = race
 race.load(laps=True, telemetry=False)         # timing only
@@ -89,18 +92,20 @@ race.load(laps=True, telemetry=False)         # timing only
 # Extract laps table as DataFrame
 laps = race.laps.copy()   # fastf1.core.Laps object
 # Convert to pandas for processing
-laps_df = laps[['Driver','LapNumber','LapTime','PitOutTime','Compound','IsPitLap']].to_pandas()
+laps_df = laps[['Driver','LapNumber','LapTime','PitInTime','PitOutTime','Compound']].copy()
 
 # Normalize columns and convert types
 laps_df = laps_df.rename(columns={
     'Driver': 'driver',
     'LapNumber': 'lap',
     'LapTime': 'lap_time_td',
+    'PitInTime': 'pit_in_time_td',
     'PitOutTime': 'pit_out_time_td',
-    'Compound': 'compound',
-    'IsPitLap': 'is_pit_lap'
+    'Compound': 'compound'
 })
 laps_df['lap_time_s'] = laps_df['lap_time_td'].apply(lambda x: x.total_seconds() if pd.notnull(x) else np.nan)
+# Replace all usage of IsPitLap with the derived version
+laps_df['is_pit_lap'] = laps_df['pit_in_time_td'].notna() | laps_df['pit_out_time_td'].notna()
 laps_df['is_pit_lap'] = laps_df['is_pit_lap'].fillna(False).astype(bool)
 # FastF1 compounds sometimes are bytes/enum; ensure string
 laps_df['compound'] = laps_df['compound'].astype(str).str.lower().replace('nan', 'unknown')
@@ -135,7 +140,7 @@ for lapnum in range(1, max_lap+1):
         lap_time_s = r['lap_time_s']
         compound = r['compound']
         is_pit = bool(r['is_pit_lap'])
-        # estimate driving lap if pit lap (Option C)
+        # estimate driving lap if pit lap
         if is_pit:
             est_drive = estimate_driving_lap_from_neighbours(laps_df, driver, lapnum)
             pit_loss = lap_time_s - est_drive if pd.notnull(lap_time_s) and pd.notnull(est_drive) else np.nan
@@ -204,3 +209,11 @@ out_df = out_df.sort_values(['driver','lap']).reset_index(drop=True)
 out_df.to_csv(OUTPUT_CSV, index=False)
 print(f"Wrote {OUTPUT_CSV}  (rows: {len(out_df)})")
 print("Columns:", list(out_df.columns))
+
+
+# Get final classification from FastF1
+results = race.results[['DriverNumber', 'Abbreviation', 'Position', 'Time', 'Status']].copy()
+results = results.sort_values('Position')
+
+print("\n=== Final Race Classification ===")
+print(results)
