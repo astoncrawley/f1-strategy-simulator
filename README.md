@@ -17,4 +17,6 @@ This project analyses Formula One team strategy using publicly available data. T
 
 ## 🛠️ Tools & Libraries
 - Python (3.10+)  
+- Pandas  
 - NumPy  
+- FastF1
